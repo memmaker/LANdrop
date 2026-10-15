@@ -58,6 +58,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_type == 'tag' && github.ref_name || 'latest' }}
         run: |
-          gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
-            || gh release create "$TAG" -R "$GITHUB_REPOSITORY" --title "LANdrop $TAG" --notes "Built from $GITHUB_SHA" ${{ github.ref_type != 'tag' && '--prerelease' || '' }}
-          gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber landrop-macos.zip landrop-windows.zip
+          if [ "$TAG" = latest ]; then  # rolling release: recreate so tag, date and notes follow main
+            gh release delete latest -R "$GITHUB_REPOSITORY" --cleanup-tag -y || true
+            gh release create latest -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
+              --title "LANdrop latest ($(date -u +%Y-%m-%d))" --notes "Rolling build of main at $GITHUB_SHA. Tag a version (v1.0.0) for a stable release." \
+              landrop-macos.zip landrop-windows.zip
+          else
+            gh release create "$TAG" -R "$GITHUB_REPOSITORY" --title "LANdrop $TAG" --generate-notes landrop-macos.zip landrop-windows.zip
+          fi
