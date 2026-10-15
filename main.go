@@ -3,6 +3,7 @@ package main
 
 import (
 	"bufio"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -20,6 +21,9 @@ import (
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
 )
+
+//go:embed Icon.png
+var iconPNG []byte
 
 const mcastAddr = "239.77.77.77:7777"
 
@@ -65,6 +69,7 @@ func main() {
 	self.Port = ln.Addr().(*net.TCPAddr).Port
 
 	a := app.New()
+	a.SetIcon(fyne.NewStaticResource("Icon.png", iconPNG))
 	gui = true
 	w := a.NewWindow("LANdrop - " + host)
 	log.Wrapping = fyne.TextWrapWord

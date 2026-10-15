@@ -19,7 +19,7 @@ go build -o landrop .
 go test ./...
 ```
 
-Prebuilt binaries: [Releases](../../releases). `latest` tracks the main branch; macOS users may need `xattr -d com.apple.quarantine landrop` since the binary is unsigned.
+Prebuilt binaries: [Releases](../../releases). `latest` tracks the main branch. The macOS app is unsigned: right-click, Open on first launch, or `xattr -dr com.apple.quarantine LANdrop.app`.
 
 ## How it works
 

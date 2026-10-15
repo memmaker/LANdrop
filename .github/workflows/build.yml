@@ -18,14 +18,15 @@ jobs:
         with:
           go-version-file: go.mod
       - run: go test ./...
+      - run: go install fyne.io/tools/cmd/fyne@latest
       - if: runner.os == 'macOS'
-        run: go build -ldflags="-s -w" -o landrop .
+        run: |
+          fyne package -os darwin -release
+          zip -r landrop-macos.zip LANdrop.app   # zip keeps the executable bit
       - if: runner.os == 'Windows'
-        run: go build -ldflags="-s -w -H windowsgui" -o landrop.exe .
-      - if: runner.os == 'macOS'
-        run: zip landrop-macos.zip landrop   # zip keeps the executable bit
-      - if: runner.os == 'Windows'
-        run: Compress-Archive landrop.exe landrop-windows.zip
+        run: |
+          fyne package -os windows -release
+          Compress-Archive LANdrop.exe landrop-windows.zip
       - uses: actions/upload-artifact@v6
         with:
           name: landrop-${{ runner.os }}
