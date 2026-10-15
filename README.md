@@ -8,7 +8,7 @@ AirDrop with chat, for any LAN, on macOS and Windows. One small native binary, n
 
 ## Use
 
-Start `landrop` on two or more machines on the same network. Select a computer on the left, then type a message and press Enter, or drop files or folders on the window.
+Start `landrop` on two or more machines on the same network. Select a computer on the left, then type a message and press Enter, or drop files or folders on the window. Type `/name Alice` to change how you appear to others (the hostname is the default; the name is remembered).
 
 ## Build
 

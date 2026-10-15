@@ -87,13 +87,28 @@ func main() {
 	peerList.OnUnselected = func(widget.ListItemID) { selected = -1 }
 
 	msg := widget.NewEntry()
-	msg.SetPlaceHolder("Message (Enter to send)")
+	msg.SetPlaceHolder("Message (Enter to send) · /name <new name>")
 	msg.OnSubmitted = func(s string) {
 		if s == "" {
 			return
 		}
+		if n, ok := strings.CutPrefix(s, "/name "); ok {
+			n = strings.TrimSpace(n)
+			if n == "" || len(n) > 64 {
+				appendLog("usage: /name <new name>")
+				return
+			}
+			mu.Lock()
+			self.Name = n
+			mu.Unlock()
+			a.Preferences().SetString("name", n)
+			w.SetTitle("LANdrop - " + n)
+			appendLog("you are now \"" + n + "\" (peers update within a few seconds)")
+			msg.SetText("")
+			return
+		}
 		if p := target(w); p != nil {
-			go send(p, header{Type: "chat", From: self.Name, Text: s}, nil)
+			go send(p, header{Type: "chat", From: myName(), Text: s}, nil)
 			appendLog("me -> " + p.Name + ": " + s)
 			msg.SetText("")
 		}
@@ -164,12 +179,14 @@ func sendPath(p *peer, path, name string) {
 	st, _ := f.Stat()
 	appendLog(fmt.Sprintf("sending %s (%s) -> %s", name, humanBytes(float64(st.Size())), p.Name))
 	t := time.Now()
-	if err := sendFileRetry(p, header{Type: "file", From: self.Name, Name: name, Size: st.Size()}, f); err != nil {
+	if err := sendFileRetry(p, header{Type: "file", From: myName(), Name: name, Size: st.Size()}, f); err != nil {
 		appendLog("error: " + err.Error())
 		return
 	}
 	appendLog(fmt.Sprintf("sent %s in %s (%s/s)", name, time.Since(t).Round(time.Millisecond), humanBytes(float64(st.Size())/time.Since(t).Seconds())))
 }
+
+func myName() string { mu.Lock(); defer mu.Unlock(); return self.Name }
 
 func sortedPeers() []*peer {
 	mu.Lock()
@@ -208,8 +225,10 @@ func announce() {
 		appendLog("multicast error: " + err.Error())
 		return
 	}
-	b, _ := json.Marshal(self)
 	for ; ; time.Sleep(2 * time.Second) {
+		mu.Lock()
+		b, _ := json.Marshal(self)
+		mu.Unlock()
 		c.Write(b)
 	}
 }
