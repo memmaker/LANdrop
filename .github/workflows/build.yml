@@ -17,8 +17,23 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+          cache: false
+      - id: go
+        shell: bash
+        run: echo "cache=$(go env GOCACHE)" >> "$GITHUB_OUTPUT"
+      # setup-go's cache is saved once per go.sum and never refreshed, so the
+      # release-tag cgo build never got cached. This key is unique per commit and
+      # falls back to the newest previous one, so every run saves a fresh cache.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/go/bin
+            ${{ steps.go.outputs.cache }}
+          key: go-${{ runner.os }}-${{ hashFiles('go.sum', '.github/workflows/build.yml') }}-${{ github.sha }}
+          restore-keys: go-${{ runner.os }}-${{ hashFiles('go.sum', '.github/workflows/build.yml') }}-
       - run: go test ./...
-      - run: go install fyne.io/tools/cmd/fyne@latest
+      - run: go install fyne.io/tools/cmd/fyne@v1.7.3
       - if: runner.os == 'macOS'
         run: |
           fyne package -os darwin -release
