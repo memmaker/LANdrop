@@ -13,7 +13,7 @@ jobs:
           go-version-file: go.mod
       - run: go test ./...
       - run: go build -ldflags="-s -w" -o landrop${{ runner.os == 'Windows' && '.exe' || '' }} .
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         with:
           name: landrop-${{ runner.os }}
           path: landrop*
