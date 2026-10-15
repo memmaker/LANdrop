@@ -18,7 +18,10 @@ jobs:
         with:
           go-version-file: go.mod
       - run: go test ./...
-      - run: go build -ldflags="-s -w" -o landrop${{ runner.os == 'Windows' && '.exe' || '' }} .
+      - if: runner.os == 'macOS'
+        run: go build -ldflags="-s -w" -o landrop .
+      - if: runner.os == 'Windows'
+        run: go build -ldflags="-s -w -H windowsgui" -o landrop.exe .
       - if: runner.os == 'macOS'
         run: zip landrop-macos.zip landrop   # zip keeps the executable bit
       - if: runner.os == 'Windows'
