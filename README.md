@@ -19,7 +19,7 @@ go build -o landrop .
 go test ./...
 ```
 
-Prebuilt binaries for macOS and Windows are attached to every push on the [Actions](../../actions) page.
+Prebuilt binaries: [Releases](../../releases). `latest` tracks the main branch; macOS users may need `xattr -d com.apple.quarantine landrop` since the binary is unsigned.
 
 ## How it works
 

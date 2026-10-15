@@ -1,5 +1,11 @@
 name: build
-on: [push, pull_request]
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+permissions:
+  contents: write
 jobs:
   build:
     strategy:
@@ -13,7 +19,26 @@ jobs:
           go-version-file: go.mod
       - run: go test ./...
       - run: go build -ldflags="-s -w" -o landrop${{ runner.os == 'Windows' && '.exe' || '' }} .
+      - if: runner.os == 'macOS'
+        run: zip landrop-macos.zip landrop   # zip keeps the executable bit
+      - if: runner.os == 'Windows'
+        run: Compress-Archive landrop.exe landrop-windows.zip
       - uses: actions/upload-artifact@v6
         with:
           name: landrop-${{ runner.os }}
-          path: landrop*
+          path: landrop-*.zip
+  release:
+    needs: build
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v6
+        with:
+          merge-multiple: true
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_type == 'tag' && github.ref_name || 'latest' }}
+        run: |
+          gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create "$TAG" -R "$GITHUB_REPOSITORY" --title "LANdrop $TAG" --notes "Built from $GITHUB_SHA" ${{ github.ref_type != 'tag' && '--prerelease' || '' }}
+          gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber landrop-macos.zip landrop-windows.zip
