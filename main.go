@@ -51,7 +51,8 @@ var (
 	self      beacon
 	mu        sync.Mutex
 	peers     = map[string]*peer{}
-	log       = widget.NewMultiLineEntry()
+	log       = widget.NewLabel("")
+	logScroll = container.NewVScroll(log)
 	peerList  *widget.List
 	selected  = -1
 	transfers = container.NewVBox()
@@ -73,7 +74,6 @@ func main() {
 	gui = true
 	w := a.NewWindow("LANdrop - " + host)
 	log.Wrapping = fyne.TextWrapWord
-	log.Disable()
 
 	peerList = widget.NewList(
 		func() int { mu.Lock(); defer mu.Unlock(); return len(peers) },
@@ -114,7 +114,7 @@ func main() {
 	})
 
 	split := container.NewHSplit(peerList,
-		container.NewBorder(nil, container.NewBorder(nil, nil, nil, sendFile, msg), nil, nil, container.NewBorder(nil, transfers, nil, nil, log)))
+		container.NewBorder(nil, container.NewBorder(nil, nil, nil, sendFile, msg), nil, nil, container.NewBorder(nil, transfers, nil, nil, logScroll)))
 	split.Offset = 0.3
 	w.SetContent(split)
 	w.SetOnDropped(func(_ fyne.Position, uris []fyne.URI) {
@@ -162,13 +162,13 @@ func sendPath(p *peer, path, name string) {
 	}
 	defer f.Close()
 	st, _ := f.Stat()
-	appendLog(fmt.Sprintf("sending %s (%d MB) -> %s", st.Name(), st.Size()>>20, p.Name))
+	appendLog(fmt.Sprintf("sending %s (%s) -> %s", name, humanBytes(float64(st.Size())), p.Name))
 	t := time.Now()
 	if err := sendFileRetry(p, header{Type: "file", From: self.Name, Name: name, Size: st.Size()}, f); err != nil {
 		appendLog("error: " + err.Error())
 		return
 	}
-	appendLog(fmt.Sprintf("sent %s in %s", st.Name(), time.Since(t).Round(time.Millisecond)))
+	appendLog(fmt.Sprintf("sent %s in %s (%s/s)", name, time.Since(t).Round(time.Millisecond), humanBytes(float64(st.Size())/time.Since(t).Seconds())))
 }
 
 func sortedPeers() []*peer {
@@ -196,7 +196,7 @@ func appendLog(s string) {
 	}
 	fyne.Do(func() {
 		log.SetText(log.Text + time.Now().Format("15:04:05 ") + s + "\n")
-		log.CursorRow = len(strings.Split(log.Text, "\n"))
+		logScroll.ScrollToBottom()
 	})
 }
 
@@ -250,16 +250,20 @@ type progress struct {
 	n, of int64
 	last  time.Time
 	bar   *widget.ProgressBar
+	stat  *widget.Label
 	row   fyne.CanvasObject
+	start time.Time
+	from  int64 // bytes already present when this transfer started
 }
 
 func newProgress(w io.Writer, c net.Conn, label string, n, of int64) *progress {
-	p := &progress{w: w, n: n, of: of}
+	p := &progress{w: w, n: n, of: of, from: n, start: time.Now()}
 	if !gui {
 		return p
 	}
 	p.bar = widget.NewProgressBar()
-	p.row = container.NewBorder(nil, nil, widget.NewLabel(label), widget.NewButton("Cancel", func() { c.Close() }), p.bar)
+	p.stat = widget.NewLabel("")
+	p.row = container.NewBorder(nil, nil, widget.NewLabel(label), container.NewHBox(p.stat, widget.NewButton("Cancel", func() { c.Close() })), p.bar)
 	fyne.Do(func() { transfers.Add(p.row) })
 	return p
 }
@@ -276,9 +280,24 @@ func (p *progress) Write(b []byte) (int, error) {
 	if gui && (time.Since(p.last) > 100*time.Millisecond || p.n == p.of) {
 		p.last = time.Now()
 		v := float64(p.n) / float64(p.of)
-		fyne.Do(func() { p.bar.SetValue(v) })
+		speed := float64(p.n-p.from) / time.Since(p.start).Seconds()
+		stat := humanBytes(speed) + "/s"
+		if speed > 0 {
+			stat += "  ETA " + (time.Duration(float64(p.of-p.n)/speed) * time.Second).Round(time.Second).String()
+		}
+		fyne.Do(func() { p.bar.SetValue(v); p.stat.SetText(stat) })
 	}
 	return n, err
+}
+
+func humanBytes(b float64) string {
+	for _, u := range []string{"B", "KB", "MB", "GB", "TB"} {
+		if b < 1000 {
+			return fmt.Sprintf("%.1f %s", b, u)
+		}
+		b /= 1000
+	}
+	return fmt.Sprintf("%.1f PB", b)
 }
 
 // send writes a JSON header line then streams body (if any) over one TCP connection.
@@ -362,7 +381,7 @@ func handle(c net.Conn) {
 			f.Close()
 			return
 		}
-		appendLog(fmt.Sprintf("receiving %s (%d MB) from %s at %d%%", name, h.Size>>20, h.From, offset*100/max(h.Size, 1)))
+		appendLog(fmt.Sprintf("receiving %s (%s) from %s at %d%%", name, humanBytes(float64(h.Size)), h.From, offset*100/max(h.Size, 1)))
 		t := time.Now()
 		pr := newProgress(f, c, "← "+name, offset, h.Size)
 		n, err := io.CopyN(pr, r, h.Size-offset)
@@ -381,6 +400,6 @@ func handle(c net.Conn) {
 			path = filepath.Join(dir, fmt.Sprintf("%s (%d)%s", strings.TrimSuffix(name, ext), i, ext))
 		}
 		os.Rename(part, path)
-		appendLog(fmt.Sprintf("saved %s in %s", path, time.Since(t).Round(time.Millisecond)))
+		appendLog(fmt.Sprintf("saved %s in %s (%s/s)", path, time.Since(t).Round(time.Millisecond), humanBytes(float64(h.Size-offset)/time.Since(t).Seconds())))
 	}
 }

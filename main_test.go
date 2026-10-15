@@ -41,3 +41,11 @@ func TestFileRoundTrip(t *testing.T) {
 		t.Fatalf("file mismatch: got %d bytes, want %d", len(got), len(data))
 	}
 }
+
+func TestHumanBytes(t *testing.T) {
+	for in, want := range map[float64]string{512: "512.0 B", 1500: "1.5 KB", 12.3e6: "12.3 MB", 2e9: "2.0 GB"} {
+		if got := humanBytes(in); got != want {
+			t.Errorf("humanBytes(%v) = %q, want %q", in, got, want)
+		}
+	}
+}
