@@ -1,3 +1,4 @@
 landrop
 *.app
 *.exe
+.DS_Store
