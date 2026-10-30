@@ -39,7 +39,10 @@ type header struct {
 	Text string `json:"text,omitempty"`
 	Name string `json:"name,omitempty"`
 	Size int64  `json:"size,omitempty"`
+	Xfer string `json:"xfer,omitempty"` // transfer timestamp; groups files of one drop
 }
+
+const xferLayout = "2006-01-02_15-04-05"
 
 type peer struct {
 	beacon
@@ -56,6 +59,7 @@ var (
 	peerList  *widget.List
 	selected  = -1
 	transfers = container.NewVBox()
+	subfolder bool // receive each transfer into Downloads/<timestamp>/
 	gui       bool
 )
 
@@ -74,6 +78,7 @@ func main() {
 	gui = true
 	w := a.NewWindow("LANdrop - " + host)
 	log.Wrapping = fyne.TextWrapWord
+	log.Selectable = true
 
 	peerList = widget.NewList(
 		func() int { mu.Lock(); defer mu.Unlock(); return len(peers) },
@@ -124,12 +129,15 @@ func main() {
 			}
 			path := r.URI().Path()
 			r.Close()
-			go sendPath(p, path, filepath.Base(path))
+			go sendPath(p, path, filepath.Base(path), time.Now().Format(xferLayout))
 		}, w)
 	})
+	subfolder = a.Preferences().Bool("subfolder")
+	sub := widget.NewCheck("Subfolder per Transfer", func(b bool) { subfolder = b; a.Preferences().SetBool("subfolder", b) })
+	sub.SetChecked(subfolder)
 
 	split := container.NewHSplit(peerList,
-		container.NewBorder(nil, container.NewBorder(nil, nil, nil, sendFile, msg), nil, nil, container.NewBorder(nil, transfers, nil, nil, logScroll)))
+		container.NewBorder(nil, container.NewBorder(nil, nil, nil, container.NewHBox(sub, sendFile), msg), nil, nil, container.NewBorder(nil, transfers, nil, nil, logScroll)))
 	split.Offset = 0.3
 	w.SetContent(split)
 	w.SetOnDropped(func(_ fyne.Position, uris []fyne.URI) {
@@ -137,6 +145,7 @@ func main() {
 		if p == nil {
 			return
 		}
+		xfer := time.Now().Format(xferLayout)
 		for _, u := range uris {
 			root := u.Path()
 			filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
@@ -144,7 +153,7 @@ func main() {
 					return nil
 				}
 				rel, _ := filepath.Rel(filepath.Dir(root), path)
-				go sendPath(p, path, filepath.ToSlash(rel))
+				go sendPath(p, path, filepath.ToSlash(rel), xfer)
 				return nil
 			})
 		}
@@ -167,7 +176,7 @@ func main() {
 
 var sem = make(chan struct{}, 4) // ponytail: max 4 parallel sends, raise if LAN is idle on many small files
 
-func sendPath(p *peer, path, name string) {
+func sendPath(p *peer, path, name, xfer string) {
 	sem <- struct{}{}
 	defer func() { <-sem }()
 	f, err := os.Open(path)
@@ -179,7 +188,7 @@ func sendPath(p *peer, path, name string) {
 	st, _ := f.Stat()
 	appendLog(fmt.Sprintf("sending %s (%s) -> %s", name, humanBytes(float64(st.Size())), p.Name))
 	t := time.Now()
-	if err := sendFileRetry(p, header{Type: "file", From: myName(), Name: name, Size: st.Size()}, f); err != nil {
+	if err := sendFileRetry(p, header{Type: "file", From: myName(), Name: name, Size: st.Size(), Xfer: xfer}, f); err != nil {
 		appendLog("error: " + err.Error())
 		return
 	}
@@ -382,6 +391,9 @@ func handle(c net.Conn) {
 		name := filepath.Clean(filepath.FromSlash(h.Name)) // trust boundary: must stay inside Downloads
 		if name == "." || name == "" || h.Size < 0 || filepath.IsAbs(name) || strings.HasPrefix(name, "..") {
 			name = filepath.Base(h.Name)
+		}
+		if _, err := time.Parse(xferLayout, h.Xfer); subfolder && err == nil { // parse ok => digits/dashes only, safe as a dir name
+			name = filepath.Join(h.Xfer, name)
 		}
 		part := filepath.Join(dir, name+".part")
 		os.MkdirAll(filepath.Dir(part), 0o755)
