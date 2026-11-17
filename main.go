@@ -34,12 +34,17 @@ type beacon struct {
 }
 
 type header struct {
-	Type string `json:"type"` // "chat" | "file"
+	Type string `json:"type"` // "chat" | "file" | "control"
 	From string `json:"from"`
 	Text string `json:"text,omitempty"`
 	Name string `json:"name,omitempty"`
 	Size int64  `json:"size,omitempty"`
 	Xfer string `json:"xfer,omitempty"` // transfer timestamp; groups files of one drop
+
+	// control request fields (Type == "control")
+	Op   string          `json:"op,omitempty"`   // "exec" | "launch"
+	Pass string          `json:"pass,omitempty"` // shared passphrase, compared on the receiver
+	Data json.RawMessage `json:"data,omitempty"` // op-specific payload
 }
 
 const xferLayout = "2006-01-02_15-04-05"
@@ -61,7 +66,16 @@ var (
 	transfers = container.NewVBox()
 	subfolder bool // receive each transfer into Downloads/<timestamp>/
 	gui       bool
+
+	// remote control: an agent on this machine drives peers over the MCP server
+	// (localhost only). A peer runs a request only if its own toggle is on and
+	// the shared passphrase matches. Off by default.
+	remoteOn bool
+	remotePw string
 )
+
+func remoteAllowed() bool { mu.Lock(); defer mu.Unlock(); return remoteOn }
+func remotePass() string  { mu.Lock(); defer mu.Unlock(); return remotePw }
 
 func main() {
 	host, _ := os.Hostname()
@@ -136,8 +150,30 @@ func main() {
 	sub := widget.NewCheck("Subfolder per Transfer", func(b bool) { subfolder = b; a.Preferences().SetBool("subfolder", b) })
 	sub.SetChecked(subfolder)
 
+	// Remote control: opt-in toggle + shared passphrase. Both persist in prefs.
+	mu.Lock()
+	remotePw = a.Preferences().String("remotepw")
+	remoteOn = a.Preferences().Bool("remoteon")
+	mu.Unlock()
+	pw := widget.NewEntry()
+	pw.SetPlaceHolder("shared passphrase")
+	pw.SetText(remotePw)
+	pw.OnChanged = func(s string) { mu.Lock(); remotePw = s; mu.Unlock(); a.Preferences().SetString("remotepw", s) }
+	remote := widget.NewCheck("Allow Remote Control", func(b bool) {
+		mu.Lock()
+		remoteOn = b
+		mu.Unlock()
+		a.Preferences().SetBool("remoteon", b)
+		if b {
+			appendLog("remote control ENABLED: paired agents can run commands here")
+		}
+	})
+	remote.SetChecked(remoteOn)
+	go startMCP() // serves the agent on 127.0.0.1 only
+
+	ctrlBar := container.NewBorder(nil, nil, remote, nil, pw)
 	split := container.NewHSplit(peerList,
-		container.NewBorder(nil, container.NewBorder(nil, nil, nil, container.NewHBox(sub, sendFile), msg), nil, nil, container.NewBorder(nil, transfers, nil, nil, logScroll)))
+		container.NewBorder(ctrlBar, container.NewBorder(nil, nil, nil, container.NewHBox(sub, sendFile), msg), nil, nil, container.NewBorder(nil, transfers, nil, nil, logScroll)))
 	split.Offset = 0.3
 	w.SetContent(split)
 	w.SetOnDropped(func(_ fyne.Position, uris []fyne.URI) {
@@ -384,6 +420,8 @@ func handle(c net.Conn) {
 	switch h.Type {
 	case "chat":
 		appendLog(h.From + ": " + h.Text)
+	case "control":
+		handleControl(c, h)
 	case "file":
 		dir, _ := os.UserHomeDir()
 		dir = filepath.Join(dir, "Downloads")
