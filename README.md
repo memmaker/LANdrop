@@ -21,6 +21,26 @@ go test ./...
 
 Prebuilt binaries: [Releases](../../releases). `latest` tracks the main branch. The macOS app is unsigned: right-click, Open on first launch, or `xattr -dr com.apple.quarantine LANdrop.app`.
 
+## Agent control (optional)
+
+An LLM agent can orchestrate the machines on your LAN through LANdrop. The
+running app serves an MCP server on `http://127.0.0.1:7788` (localhost only,
+never reachable from the network). Point any MCP-capable agent at that URL.
+
+Tools: `list_peers`, `exec` (run a shell command), `launch_app`, `screenshot`,
+`send_input` (type text or press a key/chord).
+
+Each target machine runs a request only when **both** hold:
+
+- its **Allow Remote Control** toggle is on (off by default), and
+- the **shared passphrase** matches. Set the same passphrase on every machine
+  you want to control. It is sent in cleartext — this is for trusted LANs only.
+
+macOS permissions (granted per app signature, so an unsigned rebuild loses
+them): **Screen Recording** for `screenshot`, **Accessibility** for
+`send_input`. Both are requested the first time they are used, under System
+Settings › Privacy & Security.
+
 ## How it works
 
 Each instance announces itself on `239.77.77.77:7777` every two seconds and listens on a random TCP port. A transfer is one TCP connection: a JSON header line, then the receiver replies with the byte offset it already has in its `.part` file, then the sender streams the rest. No encryption: use it only on networks you trust.

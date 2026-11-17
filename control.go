@@ -24,12 +24,22 @@ type launchArgs struct {
 	Args []string `json:"args,omitempty"`
 }
 
+type inputArgs struct {
+	Text string `json:"text,omitempty"` // literal text to type
+	Key  string `json:"key,omitempty"`  // one key or chord, e.g. "enter", "cmd+c"
+}
+
+type screenshotArgs struct {
+	Display int `json:"display,omitempty"` // 0 = primary
+}
+
 // ctrlResp is the reply to any control request.
 type ctrlResp struct {
 	OK   bool   `json:"ok"`
 	Err  string `json:"err,omitempty"`
 	Out  string `json:"out,omitempty"`
 	Code int    `json:"code"`
+	Img  []byte `json:"img,omitempty"` // PNG, for screenshot (JSON-encoded as base64)
 }
 
 // handleControl verifies the toggle and passphrase, then dispatches. It writes
@@ -55,6 +65,23 @@ func handleControl(c net.Conn, h header) {
 		var a launchArgs
 		json.Unmarshal(h.Data, &a)
 		reply(runLaunch(a))
+	case "screenshot":
+		var a screenshotArgs
+		json.Unmarshal(h.Data, &a)
+		png, err := captureScreen(a.Display)
+		if err != nil {
+			reply(ctrlResp{Err: err.Error()})
+			return
+		}
+		reply(ctrlResp{OK: true, Img: png})
+	case "input":
+		var a inputArgs
+		json.Unmarshal(h.Data, &a)
+		if err := sendInput(a); err != nil {
+			reply(ctrlResp{Err: err.Error()})
+			return
+		}
+		reply(ctrlResp{OK: true})
 	default:
 		reply(ctrlResp{Err: "unknown op: " + h.Op})
 	}

@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -29,6 +30,17 @@ type launchIn struct {
 	Peer string   `json:"peer" jsonschema:"peer id or display name, from list_peers"`
 	App  string   `json:"app" jsonschema:"application to open (name or path)"`
 	Args []string `json:"args,omitempty" jsonschema:"arguments passed to the application"`
+}
+
+type screenshotIn struct {
+	Peer    string `json:"peer" jsonschema:"peer id or display name, from list_peers"`
+	Display int    `json:"display,omitempty" jsonschema:"display index, 0 = primary"`
+}
+
+type inputIn struct {
+	Peer string `json:"peer" jsonschema:"peer id or display name, from list_peers"`
+	Text string `json:"text,omitempty" jsonschema:"literal text to type"`
+	Key  string `json:"key,omitempty" jsonschema:"one key or chord, e.g. enter, tab, cmd+c, ctrl+shift+t"`
 }
 
 type listOut struct {
@@ -68,6 +80,34 @@ func startMCP() {
 				return nil, ctrlResp{}, err
 			}
 			r, err := callControl(p, "launch", launchArgs{App: in.App, Args: in.Args})
+			return nil, r, err
+		})
+
+	mcp.AddTool(s, &mcp.Tool{Name: "screenshot",
+		Description: "Capture a peer's screen and return it as a PNG image. On macOS the peer needs the Screen Recording permission."},
+		func(_ context.Context, _ *mcp.CallToolRequest, in screenshotIn) (*mcp.CallToolResult, struct{}, error) {
+			p, err := findPeer(in.Peer)
+			if err != nil {
+				return nil, struct{}{}, err
+			}
+			r, err := callControl(p, "screenshot", screenshotArgs{Display: in.Display})
+			if err != nil {
+				return nil, struct{}{}, err
+			}
+			if !r.OK {
+				return nil, struct{}{}, fmt.Errorf("%s", r.Err)
+			}
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.ImageContent{Data: r.Img, MIMEType: "image/png"}}}, struct{}{}, nil
+		})
+
+	mcp.AddTool(s, &mcp.Tool{Name: "send_input",
+		Description: "Type text or press a key/chord on a peer. On macOS the peer needs the Accessibility permission."},
+		func(_ context.Context, _ *mcp.CallToolRequest, in inputIn) (*mcp.CallToolResult, ctrlResp, error) {
+			p, err := findPeer(in.Peer)
+			if err != nil {
+				return nil, ctrlResp{}, err
+			}
+			r, err := callControl(p, "input", inputArgs{Text: in.Text, Key: in.Key})
 			return nil, r, err
 		})
 
