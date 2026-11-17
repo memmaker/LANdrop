@@ -77,6 +77,23 @@ var (
 func remoteAllowed() bool { mu.Lock(); defer mu.Unlock(); return remoteOn }
 func remotePass() string  { mu.Lock(); defer mu.Unlock(); return remotePw }
 
+// ctrlStatus shows which remote op is running right now (the "being controlled"
+// indicator). setControlled("") clears it.
+var ctrlStatus = widget.NewLabel("")
+
+func setControlled(s string) {
+	if !gui {
+		return
+	}
+	fyne.Do(func() {
+		if s == "" {
+			ctrlStatus.SetText("")
+		} else {
+			ctrlStatus.SetText("● remote active — " + s)
+		}
+	})
+}
+
 func main() {
 	host, _ := os.Hostname()
 	self = beacon{ID: fmt.Sprintf("%s-%d", host, os.Getpid()), Name: host}
@@ -159,19 +176,44 @@ func main() {
 	pw.SetPlaceHolder("shared passphrase")
 	pw.SetText(remotePw)
 	pw.OnChanged = func(s string) { mu.Lock(); remotePw = s; mu.Unlock(); a.Preferences().SetString("remotepw", s) }
-	remote := widget.NewCheck("Allow Remote Control", func(b bool) {
+	// Banner shown only while remote control is on, with a kill switch that
+	// stops in-flight commands and turns remote control off.
+	var remote *widget.Check
+	warn := widget.NewLabel("⚠ Remote control is ON — agents with the passphrase can control this machine")
+	kill := widget.NewButton("Kill switch", func() {
+		n := killAll()
+		mu.Lock()
+		remoteOn = false
+		mu.Unlock()
+		a.Preferences().SetBool("remoteon", false)
+		remote.SetChecked(false)
+		appendLog(fmt.Sprintf("KILL SWITCH: remote control off, cancelled %d running command(s)", n))
+	})
+	kill.Importance = widget.DangerImportance
+	banner := container.NewBorder(nil, nil, warn, kill, ctrlStatus)
+	setBanner := func(on bool) {
+		if on {
+			banner.Show()
+		} else {
+			banner.Hide()
+		}
+	}
+
+	remote = widget.NewCheck("Allow Remote Control", func(b bool) {
 		mu.Lock()
 		remoteOn = b
 		mu.Unlock()
 		a.Preferences().SetBool("remoteon", b)
+		setBanner(b)
 		if b {
 			appendLog("remote control ENABLED: paired agents can run commands here")
 		}
 	})
 	remote.SetChecked(remoteOn)
+	setBanner(remoteOn)
 	go startMCP() // serves the agent on 127.0.0.1 only
 
-	ctrlBar := container.NewBorder(nil, nil, remote, nil, pw)
+	ctrlBar := container.NewVBox(container.NewBorder(nil, nil, remote, nil, pw), banner)
 	split := container.NewHSplit(peerList,
 		container.NewBorder(ctrlBar, container.NewBorder(nil, nil, nil, container.NewHBox(sub, sendFile), msg), nil, nil, container.NewBorder(nil, transfers, nil, nil, logScroll)))
 	split.Offset = 0.3
@@ -421,7 +463,7 @@ func handle(c net.Conn) {
 	case "chat":
 		appendLog(h.From + ": " + h.Text)
 	case "control":
-		handleControl(c, h)
+		handleControl(c, r, h)
 	case "file":
 		dir, _ := os.UserHomeDir()
 		dir = filepath.Join(dir, "Downloads")

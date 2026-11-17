@@ -28,13 +28,19 @@ running app serves an MCP server on `http://127.0.0.1:7788` (localhost only,
 never reachable from the network). Point any MCP-capable agent at that URL.
 
 Tools: `list_peers`, `exec` (run a shell command), `launch_app`, `screenshot`,
-`send_input` (type text or press a key/chord).
+`send_input` (type text or press a key/chord), `put_file` and `get_file` (copy a
+file to or from a peer at an explicit path). Installing software is `exec` with
+`winget`/`brew`, optionally after `put_file` of an installer.
 
 Each target machine runs a request only when **both** hold:
 
 - its **Allow Remote Control** toggle is on (off by default), and
 - the **shared passphrase** matches. Set the same passphrase on every machine
   you want to control. It is sent in cleartext — this is for trusted LANs only.
+
+While the toggle is on, a banner warns that the machine is controllable and
+shows the running op; its **Kill switch** turns remote control off and cancels
+any running command. The main log records every remote request and its sender.
 
 macOS permissions (granted per app signature, so an unsigned rebuild loses
 them): **Screen Recording** for `screenshot`, **Accessibility** for

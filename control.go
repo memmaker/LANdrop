@@ -4,12 +4,18 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
+	"strings"
+	"sync"
 	"time"
 )
 
@@ -33,19 +39,64 @@ type screenshotArgs struct {
 	Display int `json:"display,omitempty"` // 0 = primary
 }
 
+type putArgs struct {
+	Path string `json:"path"` // destination path on the peer
+	Size int64  `json:"size"`
+}
+
+type getArgs struct {
+	Path string `json:"path"` // source path on the peer
+}
+
 // ctrlResp is the reply to any control request.
 type ctrlResp struct {
 	OK   bool   `json:"ok"`
 	Err  string `json:"err,omitempty"`
 	Out  string `json:"out,omitempty"`
 	Code int    `json:"code"`
+	N    int64  `json:"n,omitempty"`   // byte count, for put/get
 	Img  []byte `json:"img,omitempty"` // PNG, for screenshot (JSON-encoded as base64)
 }
 
+// Kill switch: every in-flight exec registers its cancel here so the user can
+// stop all running remote commands at once from the GUI.
+var (
+	runMu   sync.Mutex
+	running = map[int]context.CancelFunc{}
+	runSeq  int
+)
+
+func registerCancel(c context.CancelFunc) int {
+	runMu.Lock()
+	defer runMu.Unlock()
+	runSeq++
+	running[runSeq] = c
+	return runSeq
+}
+
+func unregisterCancel(id int) {
+	runMu.Lock()
+	defer runMu.Unlock()
+	delete(running, id)
+}
+
+// killAll cancels every in-flight remote command. Returns how many were running.
+func killAll() int {
+	runMu.Lock()
+	defer runMu.Unlock()
+	n := len(running)
+	for id, c := range running {
+		c()
+		delete(running, id)
+	}
+	return n
+}
+
 // handleControl verifies the toggle and passphrase, then dispatches. It writes
-// one ctrlResp back on c.
-func handleControl(c net.Conn, h header) {
-	reply := func(r ctrlResp) { json.NewEncoder(c).Encode(r) }
+// one ctrlResp back on c (newline-free, so a following byte stream is clean).
+// r is the buffered reader over c, already positioned past the header line.
+func handleControl(c net.Conn, r *bufio.Reader, h header) {
+	reply := func(resp ctrlResp) { b, _ := json.Marshal(resp); c.Write(b) }
 	if !remoteAllowed() {
 		reply(ctrlResp{Err: "remote control is disabled on this machine"})
 		return
@@ -56,6 +107,8 @@ func handleControl(c net.Conn, h header) {
 		return
 	}
 	appendLog(fmt.Sprintf("remote %s from %s", h.Op, h.From))
+	setControlled(h.From + ": " + h.Op)
+	defer setControlled("")
 	switch h.Op {
 	case "exec":
 		var a execArgs
@@ -82,9 +135,68 @@ func handleControl(c net.Conn, h header) {
 			return
 		}
 		reply(ctrlResp{OK: true})
+	case "put":
+		var a putArgs
+		json.Unmarshal(h.Data, &a)
+		recvFile(r, reply, a)
+	case "get":
+		var a getArgs
+		json.Unmarshal(h.Data, &a)
+		sendFile(c, reply, a)
 	default:
 		reply(ctrlResp{Err: "unknown op: " + h.Op})
 	}
+}
+
+// expandHome turns a leading ~/ into the peer's home directory.
+func expandHome(p string) string {
+	if p == "~" || strings.HasPrefix(p, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, strings.TrimPrefix(p, "~"))
+		}
+	}
+	return p
+}
+
+// recvFile (op "put") writes an incoming byte stream to an explicit path. It
+// acks readiness, reads exactly a.Size bytes, then reports the final status.
+func recvFile(r *bufio.Reader, reply func(ctrlResp), a putArgs) {
+	path := expandHome(a.Path)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		reply(ctrlResp{Err: err.Error()})
+		return
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		reply(ctrlResp{Err: err.Error()})
+		return
+	}
+	defer f.Close()
+	reply(ctrlResp{OK: true}) // ready; sender starts streaming
+	n, err := io.CopyN(f, r, a.Size)
+	if err != nil {
+		reply(ctrlResp{Err: err.Error(), N: n})
+		return
+	}
+	reply(ctrlResp{OK: true, N: n})
+}
+
+// sendFile (op "get") streams an explicit path back to the requester: a status
+// with the size, then the raw bytes.
+func sendFile(c net.Conn, reply func(ctrlResp), a getArgs) {
+	f, err := os.Open(expandHome(a.Path))
+	if err != nil {
+		reply(ctrlResp{Err: err.Error()})
+		return
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil || st.IsDir() {
+		reply(ctrlResp{Err: "not a regular file"})
+		return
+	}
+	reply(ctrlResp{OK: true, N: st.Size()})
+	io.Copy(c, f)
 }
 
 func runExec(a execArgs) ctrlResp {
@@ -97,6 +209,8 @@ func runExec(a execArgs) ctrlResp {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), d)
 	defer cancel()
+	id := registerCancel(cancel) // so the kill switch can stop it
+	defer unregisterCancel(id)
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
 		cmd = exec.CommandContext(ctx, "cmd", "/c", a.Line)
@@ -158,6 +272,84 @@ func callControl(p *peer, op string, data any) (ctrlResp, error) {
 		return ctrlResp{}, err
 	}
 	return r, nil
+}
+
+// putFile streams a local file to p, which writes it at remote. Used by the
+// put_file MCP tool on the gateway.
+func putFile(p *peer, local, remote string) (ctrlResp, error) {
+	f, err := os.Open(local)
+	if err != nil {
+		return ctrlResp{}, err
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return ctrlResp{}, err
+	}
+	c, err := net.DialTimeout("tcp", net.JoinHostPort(p.Addr, fmt.Sprint(p.Port)), 5*time.Second)
+	if err != nil {
+		return ctrlResp{}, err
+	}
+	defer c.Close()
+	raw, _ := json.Marshal(putArgs{Path: remote, Size: st.Size()})
+	h := header{Type: "control", From: myName(), Op: "put", Pass: remotePass(), Data: raw}
+	if err := json.NewEncoder(c).Encode(h); err != nil {
+		return ctrlResp{}, err
+	}
+	dec := json.NewDecoder(c)
+	var ack ctrlResp
+	if err := dec.Decode(&ack); err != nil {
+		return ctrlResp{}, err
+	}
+	if !ack.OK {
+		return ack, nil
+	}
+	if _, err := io.Copy(c, f); err != nil {
+		return ctrlResp{}, err
+	}
+	var done ctrlResp
+	if err := dec.Decode(&done); err != nil {
+		return ctrlResp{}, err
+	}
+	return done, nil
+}
+
+// getFile pulls remote from p and writes it to the local path.
+func getFile(p *peer, remote, local string) (ctrlResp, error) {
+	c, err := net.DialTimeout("tcp", net.JoinHostPort(p.Addr, fmt.Sprint(p.Port)), 5*time.Second)
+	if err != nil {
+		return ctrlResp{}, err
+	}
+	defer c.Close()
+	raw, _ := json.Marshal(getArgs{Path: remote})
+	h := header{Type: "control", From: myName(), Op: "get", Pass: remotePass(), Data: raw}
+	if err := json.NewEncoder(c).Encode(h); err != nil {
+		return ctrlResp{}, err
+	}
+	c.SetReadDeadline(time.Now().Add(10 * time.Minute))
+	dec := json.NewDecoder(c)
+	var resp ctrlResp
+	if err := dec.Decode(&resp); err != nil {
+		return ctrlResp{}, err
+	}
+	if !resp.OK {
+		return resp, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(local), 0o755); err != nil {
+		return ctrlResp{}, err
+	}
+	f, err := os.Create(local)
+	if err != nil {
+		return ctrlResp{}, err
+	}
+	defer f.Close()
+	// Bytes the decoder read past the JSON status are the start of the file.
+	src := io.MultiReader(dec.Buffered(), c)
+	n, err := io.CopyN(f, src, resp.N)
+	if err != nil {
+		return ctrlResp{}, err
+	}
+	return ctrlResp{OK: true, N: n}, nil
 }
 
 // findPeer resolves an agent-supplied identifier (peer ID or display name) to a

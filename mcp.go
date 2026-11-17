@@ -43,6 +43,18 @@ type inputIn struct {
 	Key  string `json:"key,omitempty" jsonschema:"one key or chord, e.g. enter, tab, cmd+c, ctrl+shift+t"`
 }
 
+type putIn struct {
+	Peer   string `json:"peer" jsonschema:"peer id or display name, from list_peers"`
+	Local  string `json:"local" jsonschema:"source file path on this (gateway) machine"`
+	Remote string `json:"remote" jsonschema:"destination file path on the peer (~ allowed)"`
+}
+
+type getIn struct {
+	Peer   string `json:"peer" jsonschema:"peer id or display name, from list_peers"`
+	Remote string `json:"remote" jsonschema:"source file path on the peer (~ allowed)"`
+	Local  string `json:"local" jsonschema:"destination file path on this (gateway) machine"`
+}
+
 type listOut struct {
 	Peers []peerInfo `json:"peers"`
 }
@@ -108,6 +120,28 @@ func startMCP() {
 				return nil, ctrlResp{}, err
 			}
 			r, err := callControl(p, "input", inputArgs{Text: in.Text, Key: in.Key})
+			return nil, r, err
+		})
+
+	mcp.AddTool(s, &mcp.Tool{Name: "put_file",
+		Description: "Copy a file from this machine to a peer at an explicit destination path."},
+		func(_ context.Context, _ *mcp.CallToolRequest, in putIn) (*mcp.CallToolResult, ctrlResp, error) {
+			p, err := findPeer(in.Peer)
+			if err != nil {
+				return nil, ctrlResp{}, err
+			}
+			r, err := putFile(p, in.Local, in.Remote)
+			return nil, r, err
+		})
+
+	mcp.AddTool(s, &mcp.Tool{Name: "get_file",
+		Description: "Copy a file from a peer to an explicit destination path on this machine."},
+		func(_ context.Context, _ *mcp.CallToolRequest, in getIn) (*mcp.CallToolResult, ctrlResp, error) {
+			p, err := findPeer(in.Peer)
+			if err != nil {
+				return nil, ctrlResp{}, err
+			}
+			r, err := getFile(p, in.Remote, in.Local)
 			return nil, r, err
 		})
 
